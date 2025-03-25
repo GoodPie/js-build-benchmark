@@ -12,9 +12,9 @@ import { webBuildTools } from './tools';
 const program = new Command();
 
 program
-    .name('build-benchmarker')
+    .name('js-build-benchmarker')
     .description('A CLI tool to benchmark and compare build tools')
-    .version('1.0.0');
+    .version('1.0.7');
 
 program.command('init')
     .description('Initialize a new benchmark configuration file')
@@ -78,7 +78,7 @@ program.command('init')
             );
             console.log(chalk.green(`✓ Created configuration file at ${options.file}`));
             console.log(chalk.gray('\nEdit this file to configure your build tools for benchmarking.'));
-            console.log(chalk.gray('Then run: build-benchmarker run'));
+            console.log(chalk.gray('Then run: js-build-benchmarker run'));
         } catch (error) {
             if (error instanceof Error) {
                 console.error(chalk.red('Error creating configuration file:', error.message));
@@ -97,7 +97,7 @@ program.command('run')
             // Load and validate configuration
             if (!fs.existsSync(options.file)) {
                 console.error(chalk.red(`Configuration file not found: ${options.file}`));
-                console.log(chalk.gray('Run "build-benchmarker init" to create a configuration file.'));
+                console.log(chalk.gray('Run "js-build-benchmarker init" to create a configuration file.'));
                 process.exit(1);
             }
 
