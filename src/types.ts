@@ -37,7 +37,3 @@ export interface BuildStats {
     min: string;
     max: string;
 } 
-
-git remote add origin https://github.com/GoodPie/js-build-benchmark.git
-git branch -M main
-git push -u origin main
