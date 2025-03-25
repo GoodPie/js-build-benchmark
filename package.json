@@ -1,0 +1,31 @@
+{
+  "name": "js-build-benchmarker",
+  "description": "A CLI tool to benchmark and compare JavaScript build tools",
+  "author": "Brandyn Britton",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goodpie/js-build-benchmarker"
+  },
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "build-benchmarker": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun build ./index.ts --outdir ./dist --target bun",
+    "start": "bun run ./index.ts"
+  },
+  "dependencies": {
+    "@inquirer/checkbox": "^4.1.4",
+    "@inquirer/prompts": "^7.4.0",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "bun-types": "latest",
+    "typescript": "^5.3.3"
+  }
+}
