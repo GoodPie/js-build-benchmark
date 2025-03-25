@@ -1,11 +1,12 @@
 {
-  "name": "js-build-benchmarker",
+  "name": "@goodpie/js-build-benchmarker",
   "description": "A CLI tool to benchmark and compare JavaScript build tools",
   "author": "Brandyn Britton",
+  "private": false,
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/goodpie/js-build-benchmarker"
+    "url": "git+https://github.com/goodpie/js-build-benchmarker.git"
   },
   "version": "1.0.0",
   "type": "module",
@@ -27,5 +28,18 @@
     "@types/node": "^20.11.24",
     "bun-types": "latest",
     "typescript": "^5.3.3"
-  }
+  },
+  "bugs": {
+    "url": "https://github.com/goodpie/js-build-benchmarker/issues"
+  },
+  "homepage": "https://github.com/goodpie/js-build-benchmarker#readme",
+  "main": "dist/index.js",
+  "keywords": [
+    "\"benchmark\"",
+    "\"build-tools\"",
+    "\"webpack\"",
+    "\"esbuild\"",
+    "\"vite\"",
+    "\"rollup\""
+  ]
 }

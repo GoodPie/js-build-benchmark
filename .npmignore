@@ -1,0 +1,9 @@
+src/
+index.ts
+.github/
+.gitignore
+tsconfig.json
+benchmark.config.json
+bun.lock
+*.tgz
+package/

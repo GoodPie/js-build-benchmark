@@ -34,6 +34,6 @@ export interface BenchmarkResults {
 
 export interface BuildStats {
     avg: string;
-    min: string;
+    min: string;    
     max: string;
 } 
