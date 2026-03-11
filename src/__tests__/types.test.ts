@@ -66,11 +66,33 @@ describe("BenchmarkConfigSchema", () => {
         expect(result.iterations).toBe(30);
     });
 
-    test("applies default clearCache of true", () => {
+    test("applies default cacheMode of 'cold'", () => {
         const result = BenchmarkConfigSchema.parse({
             tools: [validTool],
         });
-        expect(result.clearCache).toBe(true);
+        expect(result.cacheMode).toBe('cold');
+    });
+
+    test("accepts cacheMode 'warm'", () => {
+        const result = BenchmarkConfigSchema.parse({
+            tools: [validTool],
+            cacheMode: 'warm',
+        });
+        expect(result.cacheMode).toBe('warm');
+    });
+
+    test("accepts cacheMode 'both'", () => {
+        const result = BenchmarkConfigSchema.parse({
+            tools: [validTool],
+            cacheMode: 'both',
+        });
+        expect(result.cacheMode).toBe('both');
+    });
+
+    test("rejects invalid cacheMode value", () => {
+        expect(() =>
+            BenchmarkConfigSchema.parse({ tools: [validTool], cacheMode: 'always' })
+        ).toThrow(ZodError);
     });
 
     test("applies default warmup of false", () => {
@@ -117,11 +139,4 @@ describe("BenchmarkConfigSchema", () => {
         expect(result.globalEnv?.["CI"]).toBe("true");
     });
 
-    test("accepts clearCache set to false", () => {
-        const result = BenchmarkConfigSchema.parse({
-            tools: [validTool],
-            clearCache: false,
-        });
-        expect(result.clearCache).toBe(false);
-    });
 });
