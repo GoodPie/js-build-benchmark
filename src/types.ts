@@ -12,6 +12,7 @@ export const BuildToolConfigSchema = z.object({
 export const BenchmarkConfigSchema = z.object({
     iterations: z.number().int().positive().default(30),
     clearCache: z.boolean().default(true),
+    warmup: z.boolean().default(false),
     tools: z.array(BuildToolConfigSchema).min(1),
     cwd: z.string().optional(),
     globalEnv: z.record(z.string()).optional(),

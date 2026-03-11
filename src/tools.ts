@@ -6,17 +6,27 @@ export const webBuildTools = [
     },
     {
         name: 'vite',
-        defaultCommand: 'bun vite build',
+        defaultCommand: 'vite build',
         clearCacheDir: 'node_modules/.vite'
     },
     {
         name: 'esbuild',
-        defaultCommand: 'bun esbuild --bundle --minify',
+        defaultCommand: 'esbuild --bundle --minify',
         clearCacheDir: '.esbuild-cache'
     },
     {
         name: 'rollup',
-        defaultCommand: 'bun rollup.config.js',
+        defaultCommand: 'rollup -c',
         clearCacheDir: '.rollup-cache'
+    },
+    {
+        name: 'rspack',
+        defaultCommand: 'rspack build',
+        clearCacheDir: 'node_modules/.cache/rspack'
+    },
+    {
+        name: 'bun build',
+        defaultCommand: 'bun build ./src/index.ts --outdir ./dist',
+        clearCacheDir: undefined
     },
 ]

@@ -92,6 +92,7 @@ program.command('run')
     .option('-f, --file <path>', 'Configuration file path', 'benchmark.config.json')
     .option('-i, --iterations <number>', 'Override number of iterations')
     .option('--no-cache-clear', 'Disable cache clearing')
+    .option('--warmup', 'Run one discarded warmup iteration before collecting results')
     .action(async (options) => {
         try {
             // Load and validate configuration
@@ -110,6 +111,9 @@ program.command('run')
             }
             if (options.cacheClear === false) {
                 config.clearCache = false;
+            }
+            if (options.warmup) {
+                config.warmup = true;
             }
 
             // Validate configuration
