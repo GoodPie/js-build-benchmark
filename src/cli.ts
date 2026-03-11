@@ -144,7 +144,7 @@ program.command('run')
             if (options.iterations) {
                 (config as Record<string, unknown>).iterations = parseInt(options.iterations, 10);
             }
-            if (options.getOptionValueSource('cacheMode') === 'cli') {
+            if (process.argv.includes('--cache-mode')) {
                 (config as Record<string, unknown>).cacheMode = options.cacheMode;
             }
             if (options.warmup) {

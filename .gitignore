@@ -35,3 +35,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Benchmark
 benchmark.config.json
+
+# Integration test output (safety net if afterEach cleanup fails)
+src/__tests__/integration/*.json

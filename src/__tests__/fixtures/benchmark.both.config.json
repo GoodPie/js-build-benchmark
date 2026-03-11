@@ -1,0 +1,6 @@
+{
+  "iterations": 2,
+  "cacheMode": "both",
+  "warmup": false,
+  "tools": [{ "name": "echo-tool", "command": "echo built" }]
+}
