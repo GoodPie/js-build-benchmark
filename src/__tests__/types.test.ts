@@ -88,15 +88,16 @@ describe("BenchmarkConfigSchema", () => {
         expect(result.iterations).toBe(5);
     });
 
-    test("rejects iterations of 0", () => {
+    // iterations must be a positive integer (z.number().int().positive()).
+    // positive() means > 0, so 0 and negatives are invalid; non-integers are also invalid.
+    test.each([
+        [0, "zero is not positive"],
+        [-1, "negative is not positive"],
+        [3.5, "float is not an integer"],
+        [-0.5, "negative float fails both int and positive"],
+    ])("rejects iterations = %i (%s)", (value) => {
         expect(() =>
-            BenchmarkConfigSchema.parse({ iterations: 0, tools: [validTool] })
-        ).toThrow(ZodError);
-    });
-
-    test("rejects non-integer iterations", () => {
-        expect(() =>
-            BenchmarkConfigSchema.parse({ iterations: 3.5, tools: [validTool] })
+            BenchmarkConfigSchema.parse({ iterations: value, tools: [validTool] })
         ).toThrow(ZodError);
     });
 
@@ -114,12 +115,6 @@ describe("BenchmarkConfigSchema", () => {
         });
         expect(result.cwd).toBe("/projects/myapp");
         expect(result.globalEnv?.["CI"]).toBe("true");
-    });
-
-    test("rejects negative iterations", () => {
-        expect(() =>
-            BenchmarkConfigSchema.parse({ iterations: -1, tools: [validTool] })
-        ).toThrow(ZodError);
     });
 
     test("accepts clearCache set to false", () => {
