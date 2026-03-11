@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
-import type { BenchmarkConfig, BuildToolConfig, BuildStats } from "../types";
+import type { BenchmarkConfig, BuildToolConfig } from "../types";
 
 // ─── Module mocks (must be declared before any import of the module under test) ───
 //
@@ -59,14 +59,6 @@ const { Benchmarker } = await import("../benchmark");
 // exact signatures, so any drift in the source will produce a compile error here.
 
 class TestableBenchmarker extends Benchmarker {
-    exposedCalculateStats(arr: number[]): BuildStats {
-        return this.calculateStats(arr);
-    }
-
-    exposedGetBuildSize(outputDir: string): number {
-        return this.getBuildSize(outputDir);
-    }
-
     exposedClearCache(tool: BuildToolConfig): void {
         return this.clearCache(tool);
     }
@@ -115,150 +107,10 @@ function makeSpawnError(message = "spawn error") {
 
 const minimalConfig: BenchmarkConfig = {
     iterations: 1,
-    clearCache: false,
+    cacheMode: 'cold',
     warmup: false,
     tools: [{ name: "esbuild", command: "esbuild --bundle" }],
 };
-
-// ─── calculateStats ────────────────────────────────────────────────────────────
-
-describe("Benchmarker.calculateStats", () => {
-    let b: TestableBenchmarker;
-
-    beforeEach(() => {
-        b = new TestableBenchmarker(minimalConfig);
-    });
-
-    test("returns correct avg, min, max for a standard array", () => {
-        const stats = b.exposedCalculateStats([1, 2, 3, 4, 5]);
-        expect(stats.avg).toBe("3.00");
-        expect(stats.min).toBe("1.00");
-        expect(stats.max).toBe("5.00");
-    });
-
-    test("returns correct values for a single-element array", () => {
-        const stats = b.exposedCalculateStats([42]);
-        expect(stats.avg).toBe("42.00");
-        expect(stats.min).toBe("42.00");
-        expect(stats.max).toBe("42.00");
-    });
-
-    test("formats results to 2 decimal places", () => {
-        const stats = b.exposedCalculateStats([1, 2]);
-        expect(stats.avg).toBe("1.50");
-        expect(stats.min).toBe("1.00");
-        expect(stats.max).toBe("2.00");
-    });
-
-    test("handles identical values", () => {
-        const stats = b.exposedCalculateStats([7, 7, 7]);
-        expect(stats.avg).toBe("7.00");
-        expect(stats.min).toBe("7.00");
-        expect(stats.max).toBe("7.00");
-    });
-
-    test("returns strings, not numbers", () => {
-        const stats = b.exposedCalculateStats([5]);
-        expect(typeof stats.avg).toBe("string");
-        expect(typeof stats.min).toBe("string");
-        expect(typeof stats.max).toBe("string");
-    });
-
-    test("handles floating-point inputs", () => {
-        const stats = b.exposedCalculateStats([1.5, 2.5, 3.0]);
-        expect(stats.avg).toBe("2.33");
-        expect(stats.min).toBe("1.50");
-        expect(stats.max).toBe("3.00");
-    });
-
-    // Document the invariant: printSummary guards with `length > 0` before calling
-    // calculateStats, so an empty array never reaches it in production.
-    test("empty array is never passed in production (printSummary guards with length > 0)", async () => {
-        const consoleSpy = spyOn(console, "log").mockImplementation(() => {});
-        const consoleErrSpy = spyOn(console, "error").mockImplementation(() => {});
-        spawnSyncMock.mockReturnValue(makeSpawnFailure(1));
-
-        const config: BenchmarkConfig = {
-            iterations: 1,
-            clearCache: false,
-            warmup: false,
-            tools: [{ name: "esbuild", command: "esbuild --bundle" }],
-        };
-        const benchmarker = new Benchmarker(config);
-        const results = await benchmarker.run();
-        // All iterations failed — results array is empty
-        expect(results["esbuild"]).toHaveLength(0);
-        // calculateStats was not called with the empty array (no throw)
-        consoleSpy.mockRestore();
-        consoleErrSpy.mockRestore();
-    });
-});
-
-// ─── getBuildSize ──────────────────────────────────────────────────────────────
-
-describe("Benchmarker.getBuildSize", () => {
-    let b: TestableBenchmarker;
-    let consoleSpy: ReturnType<typeof spyOn>;
-    let consoleErrSpy: ReturnType<typeof spyOn>;
-
-    beforeEach(() => {
-        b = new TestableBenchmarker(minimalConfig);
-        consoleSpy = spyOn(console, "log").mockImplementation(() => {});
-        consoleErrSpy = spyOn(console, "error").mockImplementation(() => {});
-        spawnSyncMock.mockClear();
-        existsSyncMock.mockClear();
-    });
-
-    afterEach(() => {
-        consoleSpy.mockRestore();
-        consoleErrSpy.mockRestore();
-    });
-
-    test("returns 0 when output directory does not exist", () => {
-        existsSyncMock.mockImplementationOnce(() => false);
-        const size = b.exposedGetBuildSize("/some/missing/dir");
-        expect(size).toBe(0);
-        expect(spawnSyncMock).not.toHaveBeenCalled();
-    });
-
-    test.skipIf(process.platform === "win32")(
-        "calls spawnSync('du', ['-sk', outputDir]) on non-Windows",
-        () => {
-            existsSyncMock.mockImplementationOnce(() => true);
-            // du -sk returns KB as a plain integer: "12288\t/path/to/dist"
-            spawnSyncMock.mockReturnValueOnce(makeSpawnSuccess("12288\t/path/to/dist\n"));
-            const size = b.exposedGetBuildSize("/path/to/dist");
-            expect(spawnSyncMock).toHaveBeenCalledWith(
-                "du",
-                ["-sk", "/path/to/dist"],
-                expect.any(Object)
-            );
-            // 12288 KB / 1024 = 12 MB
-            expect(size).toBe(12);
-        }
-    );
-
-    test.skipIf(process.platform === "win32")(
-        "converts du -sk kilobytes output to megabytes",
-        () => {
-            existsSyncMock.mockImplementationOnce(() => true);
-            // 2048 KB = 2 MB
-            spawnSyncMock.mockReturnValueOnce(makeSpawnSuccess("2048\t/path/to/dist\n"));
-            const size = b.exposedGetBuildSize("/path/to/dist");
-            expect(size).toBe(2);
-        }
-    );
-
-    test.skipIf(process.platform === "win32")(
-        "returns 0 and logs a warning when du fails",
-        () => {
-            existsSyncMock.mockImplementationOnce(() => true);
-            spawnSyncMock.mockReturnValueOnce(makeSpawnError("du: command not found"));
-            const size = b.exposedGetBuildSize("/some/dir");
-            expect(size).toBe(0);
-        }
-    );
-});
 
 // ─── clearCache ────────────────────────────────────────────────────────────────
 
@@ -366,24 +218,57 @@ describe("Benchmarker.run", () => {
             ...minimalConfig,
             tools: [{ name: "esbuild", command: "esbuild --bundle" }],
         });
-        const results = await benchmarker.run();
+        const { results } = await benchmarker.run();
 
         expect(results).toHaveProperty("esbuild");
     });
 
-    test("runs the correct number of iterations", async () => {
+    test("runs the correct number of cold iterations with cacheMode 'cold'", async () => {
         spawnSyncMock.mockReturnValue(makeSpawnSuccess("", macosMemoryOutput));
         existsSyncMock.mockReturnValue(false);
 
         const benchmarker = new Benchmarker({
             iterations: 3,
-            clearCache: false,
+            cacheMode: 'cold',
             warmup: false,
             tools: [{ name: "esbuild", command: "esbuild --bundle" }],
         });
-        const results = await benchmarker.run();
+        const { results } = await benchmarker.run();
 
-        expect(results["esbuild"]).toHaveLength(3);
+        expect(results["esbuild"]?.cold).toHaveLength(3);
+        expect(results["esbuild"]?.warm).toHaveLength(0);
+    });
+
+    test("runs the correct number of warm iterations with cacheMode 'warm'", async () => {
+        spawnSyncMock.mockReturnValue(makeSpawnSuccess("", macosMemoryOutput));
+        existsSyncMock.mockReturnValue(false);
+
+        const benchmarker = new Benchmarker({
+            iterations: 2,
+            cacheMode: 'warm',
+            warmup: false,
+            tools: [{ name: "esbuild", command: "esbuild --bundle" }],
+        });
+        const { results } = await benchmarker.run();
+
+        expect(results["esbuild"]?.warm).toHaveLength(2);
+        expect(results["esbuild"]?.cold).toHaveLength(0);
+    });
+
+    test("runs both cold and warm iterations with cacheMode 'both'", async () => {
+        spawnSyncMock.mockReturnValue(makeSpawnSuccess("", macosMemoryOutput));
+        existsSyncMock.mockReturnValue(false);
+
+        const benchmarker = new Benchmarker({
+            iterations: 2,
+            cacheMode: 'both',
+            warmup: false,
+            tools: [{ name: "esbuild", command: "esbuild --bundle" }],
+        });
+        const { results } = await benchmarker.run();
+
+        expect(results["esbuild"]?.cold).toHaveLength(2);
+        expect(results["esbuild"]?.warm).toHaveLength(2);
     });
 
     test("returns results for multiple tools", async () => {
@@ -392,62 +277,18 @@ describe("Benchmarker.run", () => {
 
         const benchmarker = new Benchmarker({
             iterations: 1,
-            clearCache: false,
+            cacheMode: 'cold',
             warmup: false,
             tools: [
                 { name: "esbuild", command: "esbuild --bundle" },
                 { name: "webpack", command: "webpack --mode production" },
             ],
         });
-        const results = await benchmarker.run();
+        const { results } = await benchmarker.run();
 
         expect(results).toHaveProperty("esbuild");
         expect(results).toHaveProperty("webpack");
     });
-
-    test.skipIf(process.platform !== "darwin")(
-        "parses macOS memory usage (bytes) from spawnSync stderr",
-        async () => {
-            // 104857600 bytes = 100 MB
-            spawnSyncMock.mockReturnValue(makeSpawnSuccess("", "104857600 maximum resident set size\n"));
-            existsSyncMock.mockReturnValue(false);
-
-            const benchmarker = new Benchmarker({
-                ...minimalConfig,
-                tools: [{ name: "esbuild", command: "esbuild --bundle" }],
-            });
-            const results = await benchmarker.run();
-
-            const result = results["esbuild"]?.[0];
-            expect(result).toBeDefined();
-            if (result) {
-                expect(result.memoryUsage).toBeCloseTo(100, 0);
-            }
-        }
-    );
-
-    test.skipIf(process.platform !== "linux")(
-        "parses Linux memory usage (KB) from spawnSync stderr",
-        async () => {
-            // 102400 KB = 100 MB
-            spawnSyncMock.mockReturnValue(
-                makeSpawnSuccess("", "Maximum resident set size (kbytes): 102400\n")
-            );
-            existsSyncMock.mockReturnValue(false);
-
-            const benchmarker = new Benchmarker({
-                ...minimalConfig,
-                tools: [{ name: "esbuild", command: "esbuild --bundle" }],
-            });
-            const results = await benchmarker.run();
-
-            const result = results["esbuild"]?.[0];
-            expect(result).toBeDefined();
-            if (result) {
-                expect(result.memoryUsage).toBeCloseTo(100, 0);
-            }
-        }
-    );
 
     test("handles failed build iterations gracefully and continues", async () => {
         // First call fails (non-zero exit), second call succeeds.
@@ -460,13 +301,13 @@ describe("Benchmarker.run", () => {
 
         const benchmarker = new Benchmarker({
             iterations: 2,
-            clearCache: false,
+            cacheMode: 'cold',
             warmup: false,
             tools: [{ name: "esbuild", command: "esbuild --bundle" }],
         });
-        const results = await benchmarker.run();
+        const { results } = await benchmarker.run();
         // 1 failed + 1 successful = 1 result
-        expect(results["esbuild"]).toHaveLength(1);
+        expect(results["esbuild"]?.cold).toHaveLength(1);
     });
 
     test("records buildTime as a non-negative number", async () => {
@@ -477,12 +318,48 @@ describe("Benchmarker.run", () => {
             ...minimalConfig,
             tools: [{ name: "esbuild", command: "esbuild --bundle" }],
         });
-        const results = await benchmarker.run();
+        const { results } = await benchmarker.run();
 
-        const result = results["esbuild"]?.[0];
+        const result = results["esbuild"]?.cold[0];
         expect(result).toBeDefined();
         if (result) {
             expect(result.buildTime).toBeGreaterThanOrEqual(0);
         }
+    });
+
+    test("result includes fileCount field", async () => {
+        spawnSyncMock.mockReturnValue(makeSpawnSuccess("", macosMemoryOutput));
+        existsSyncMock.mockReturnValue(false);
+
+        const benchmarker = new Benchmarker({
+            ...minimalConfig,
+            tools: [{ name: "esbuild", command: "esbuild --bundle" }],
+        });
+        const { results } = await benchmarker.run();
+
+        const result = results["esbuild"]?.cold[0];
+        expect(result).toBeDefined();
+        if (result) {
+            expect(typeof result.fileCount).toBe("number");
+            expect(result.fileCount).toBeGreaterThanOrEqual(0);
+        }
+    });
+
+    // Document the invariant: printSummary guards with `length > 0` before calling
+    // calculateStats, so an empty array never reaches it in production.
+    test("empty results array does not cause calculateStats to throw", async () => {
+        spawnSyncMock.mockReturnValue(makeSpawnFailure(1));
+
+        const config: BenchmarkConfig = {
+            iterations: 1,
+            cacheMode: 'cold',
+            warmup: false,
+            tools: [{ name: "esbuild", command: "esbuild --bundle" }],
+        };
+        const benchmarker = new Benchmarker(config);
+        const { results } = await benchmarker.run();
+        // All iterations failed — cold results array is empty
+        expect(results["esbuild"]?.cold).toHaveLength(0);
+        // calculateStats was not called with the empty array (no throw)
     });
 });

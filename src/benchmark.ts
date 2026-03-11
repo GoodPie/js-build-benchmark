@@ -1,37 +1,27 @@
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import chalk from 'chalk';
-import type { BuildToolConfig, BenchmarkConfig, BenchmarkResults, BuildStats, BuildResults, BuildResult } from './types';
-import { BuildToolError } from './errors';
+import type {
+    BuildToolConfig,
+    BenchmarkConfig,
+    BenchmarkResults,
+    BuildResults,
+    BuildResult,
+    ToolResults,
+    HardwareInfo,
+} from './types.js';
+import { BuildToolError } from './errors.js';
+import { getTimeArgs, parseMemoryUsage } from './memory.js';
+import { calculateStats } from './statistics.js';
+import { getBuildSize, getFileCount } from './filesystem.js';
+import { printHardwareInfo, printSummary } from './reporter.js';
 
-// Warn once per run on Windows where memory measurement is unavailable
-let memoryWarningShown = false;
-
-function getTimeArgs(): string[] | null {
-    if (process.platform === 'win32') {
-        return null;
-    }
-    // macOS uses -l, Linux uses -v
-    return process.platform === 'darwin' ? ['/usr/bin/time', '-l'] : ['/usr/bin/time', '-v'];
-}
-
-function parseMemoryUsage(timeOutput: string): number {
-    if (process.platform === 'darwin') {
-        // macOS: "maximum resident set size" is in bytes
-        const match = timeOutput.match(/(\d+)\s+maximum resident set size/);
-        if (match && match[1]) {
-            return parseInt(match[1], 10) / 1024 / 1024;
-        }
-    } else if (process.platform === 'linux') {
-        // Linux: "Maximum resident set size" is in KB
-        const match = timeOutput.match(/Maximum resident set size \(kbytes\):\s*(\d+)/);
-        if (match && match[1]) {
-            return parseInt(match[1], 10) / 1024;
-        }
-    }
-    return 0;
-}
+const BYTES_TO_GB = 1024 * 1024 * 1024;
+const MS_TO_S = 1000;
+const SPAWN_MAX_BUFFER = 10 * 1024 * 1024;
+const SPAWN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 // Split a shell command string into [executable, ...args] for safe use with spawnSync.
 // This handles quoted arguments (single and double) and basic escaping, which is enough
@@ -62,6 +52,9 @@ function splitCommand(command: string): [string, string[]] {
     }
     if (current.length > 0) args.push(current);
 
+    if (args.length === 0) {
+        throw new Error('Command string is empty — cannot determine executable');
+    }
     const [exe, ...rest] = args as [string, ...string[]];
     return [exe, rest];
 }
@@ -70,6 +63,8 @@ export class Benchmarker {
     private results: BenchmarkResults = {};
     private config: BenchmarkConfig;
     private cwd: string;
+    // Warn once per instance on Windows where memory measurement is unavailable
+    private memoryWarningShown = false;
 
     constructor(config: BenchmarkConfig) {
         this.config = config;
@@ -77,7 +72,7 @@ export class Benchmarker {
 
         // Initialize results for each tool
         for (const tool of config.tools) {
-            this.results[tool.name] = [] as BuildResults;
+            this.results[tool.name] = { cold: [], warm: [] };
         }
     }
 
@@ -100,92 +95,43 @@ export class Benchmarker {
         }
     }
 
-    protected getBuildSize(outputDir: string): number {
-        try {
-            if (!fs.existsSync(outputDir)) {
-                return 0;
-            }
-
-            if (process.platform !== 'win32') {
-                // spawnSync with an arg array — outputDir is never shell-expanded
-                // du -sk returns size in kilobytes as a plain integer with no unit suffix
-                const result = spawnSync('du', ['-sk', outputDir], { encoding: 'utf8' });
-                if (result.error) throw result.error;
-                const kb = parseInt((result.stdout as string).trim().split('\t')[0] ?? '0', 10);
-                return kb / 1024;
-            } else {
-                let totalSize = 0;
-
-                const calculateDirSize = (dirPath: string): void => {
-                    const files = fs.readdirSync(dirPath);
-                    for (const file of files) {
-                        const filePath = path.join(dirPath, file);
-                        const stats = fs.statSync(filePath);
-                        if (stats.isDirectory()) {
-                            calculateDirSize(filePath);
-                        } else {
-                            totalSize += stats.size;
-                        }
-                    }
-                };
-
-                calculateDirSize(outputDir);
-                return totalSize / (1024 * 1024);
-            }
-        } catch (err: unknown) {
-            console.error(chalk.yellow(`Warning: Error getting build size:`, err instanceof Error ? err.message : String(err)));
-            return 0;
-        }
-    }
-
-    protected calculateStats(arr: number[]): BuildStats {
-        const sum = arr.reduce((a, b) => a + b, 0);
-        const avg = sum / arr.length;
-        const min = Math.min(...arr);
-        const max = Math.max(...arr);
-
+    private getHardwareInfo(): HardwareInfo {
+        const cpus = os.cpus();
         return {
-            avg: avg.toFixed(2),
-            min: min.toFixed(2),
-            max: max.toFixed(2)
+            cpu: cpus[0]?.model ?? 'unknown',
+            cores: cpus.length,
+            totalMemoryGB: parseFloat((os.totalmem() / BYTES_TO_GB).toFixed(1)),
+            platform: process.platform,
+            osVersion: os.release(),
+            nodeVersion: process.version,
         };
     }
 
-    private async benchmarkTool(tool: BuildToolConfig): Promise<BuildResults> {
-        console.log(chalk.cyan(`\n===== Benchmarking ${tool.name} =====`));
-
-        const env = {
-            ...process.env,
-            ...this.config.globalEnv,
-            ...tool.env
-        } as Record<string, string>;
-
+    private async runIterations(tool: BuildToolConfig, env: Record<string, string>, clearCacheBeforeEach: boolean, label: string): Promise<BuildResults> {
         const buildResults: BuildResults = [];
 
-        // Run one warmup iteration whose result is discarded (cold-start outlier)
-        if (this.config.warmup) {
-            console.log(chalk.gray('\nWarmup run (result discarded):'));
-            await this.runBenchmark(tool, env);
-        }
-
-        // Track output size after the first successful build — it doesn't change between iterations
         let outputSize: number | null = null;
+        let outputFileCount: number | null = null;
 
         for (let i = 1; i <= this.config.iterations; i++) {
             try {
-                console.log(chalk.gray(`\nRun ${i}/${this.config.iterations}:`));
-                const buildResult = await this.runBenchmark(tool, env);
+                console.log(chalk.gray(`\n[${label}] Run ${i}/${this.config.iterations}:`));
+                const buildResult = await this.runBenchmark(tool, env, clearCacheBeforeEach);
                 if (buildResult) {
-                    // Measure size once after first successful build
+                    // Measure size and file count once after first successful build
                     if (outputSize === null && tool.outputDir) {
-                        outputSize = this.getBuildSize(path.join(this.cwd, tool.outputDir));
+                        const fullOutputDir = path.join(this.cwd, tool.outputDir);
+                        outputSize = getBuildSize(fullOutputDir);
+                        outputFileCount = getFileCount(fullOutputDir);
                     }
 
                     buildResult.size = outputSize ?? 0;
+                    buildResult.fileCount = outputFileCount ?? 0;
 
                     console.log(chalk.green(`✓ Build time: ${buildResult.buildTime.toFixed(2)}s`));
                     console.log(chalk.green(`✓ Memory usage: ${buildResult.memoryUsage.toFixed(2)} MB`));
                     console.log(chalk.green(`✓ Output size: ${buildResult.size.toFixed(2)} MB`));
+                    console.log(chalk.green(`✓ File count: ${buildResult.fileCount}`));
 
                     buildResults.push(buildResult);
                 } else {
@@ -200,18 +146,50 @@ export class Benchmarker {
         return buildResults;
     }
 
-    private async runBenchmark(tool: BuildToolConfig, env: Record<string, string>): Promise<BuildResult | undefined> {
-        // Clear the cache
-        if (this.config.clearCache) {
+    private async benchmarkTool(tool: BuildToolConfig): Promise<ToolResults> {
+        console.log(chalk.cyan(`\n===== Benchmarking ${tool.name} =====`));
+
+        const env = {
+            ...process.env,
+            ...this.config.globalEnv,
+            ...tool.env
+        } as Record<string, string>;
+
+        // Run one warmup iteration whose result is discarded (cold-start outlier)
+        if (this.config.warmup) {
+            console.log(chalk.gray('\nWarmup run (result discarded):'));
+            await this.runBenchmark(tool, env, true);
+        }
+
+        const toolResults: ToolResults = { cold: [], warm: [] };
+
+        if (this.config.cacheMode === 'cold' || this.config.cacheMode === 'both') {
+            console.log(chalk.cyan(`\n--- Cold runs (cache cleared before each) ---`));
+            toolResults.cold = await this.runIterations(tool, env, true, 'cold');
+        }
+
+        if (this.config.cacheMode === 'warm' || this.config.cacheMode === 'both') {
+            console.log(chalk.cyan(`\n--- Warm runs (cache preserved) ---`));
+            toolResults.warm = await this.runIterations(tool, env, false, 'warm');
+        }
+
+        return toolResults;
+    }
+
+    private async runBenchmark(tool: BuildToolConfig, env: Record<string, string>, shouldClearCache: boolean): Promise<BuildResult | undefined> {
+        if (shouldClearCache) {
             console.log(chalk.gray('Clearing cache...'));
             this.clearCache(tool);
         }
 
         console.log(chalk.gray(`Executing: ${tool.command} in directory: ${this.cwd}`));
+        // startTime is recorded after cache clearing and logging so that only
+        // the actual build execution is measured.
         const startTime = Date.now();
 
-        const timeArgs = getTimeArgs();
+        const timeArgs = getTimeArgs(process.platform as NodeJS.Platform);
         const [exe, cmdArgs] = splitCommand(tool.command);
+        const spawnTimeout = this.config.timeout ?? SPAWN_TIMEOUT_MS;
 
         let memoryUsage = 0;
 
@@ -228,7 +206,8 @@ export class Benchmarker {
                 cwd: this.cwd,
                 env,
                 encoding: 'utf8',
-                maxBuffer: 10 * 1024 * 1024,
+                maxBuffer: SPAWN_MAX_BUFFER,
+                timeout: spawnTimeout,
                 stdio: ['ignore', 'inherit', 'pipe'],
             });
 
@@ -240,19 +219,21 @@ export class Benchmarker {
                 throw new BuildToolError(`${tool.name} exited with code ${result.status}${stderr ? `\n${stderr}` : ''}`);
             }
 
-            memoryUsage = parseMemoryUsage((result.stderr as string | null) ?? '');
+            const parsed = parseMemoryUsage((result.stderr as string | null) ?? '');
+            memoryUsage = parsed ?? 0;
         } else {
             // Windows — no /usr/bin/time available
-            if (!memoryWarningShown) {
+            if (!this.memoryWarningShown) {
                 console.log(chalk.yellow('Warning: Memory measurement is not supported on Windows. Memory usage will be reported as 0.'));
-                memoryWarningShown = true;
+                this.memoryWarningShown = true;
             }
 
             const result = spawnSync(exe, cmdArgs, {
                 cwd: this.cwd,
                 env,
                 encoding: 'utf8',
-                maxBuffer: 10 * 1024 * 1024,
+                maxBuffer: SPAWN_MAX_BUFFER,
+                timeout: spawnTimeout,
                 stdio: ['ignore', 'inherit', 'inherit'],
             });
 
@@ -265,113 +246,30 @@ export class Benchmarker {
         }
 
         const endTime = Date.now();
-        const buildTime = (endTime - startTime) / 1000;
+        const buildTime = (endTime - startTime) / MS_TO_S;
 
         return {
             buildTime,
             memoryUsage,
-            size: 0, // populated in benchmarkTool after first successful build
+            size: 0,       // populated in runIterations after first successful build
+            fileCount: 0,  // populated in runIterations after first successful build
         };
     }
 
-    public async run(): Promise<BenchmarkResults> {
+    public async run(): Promise<{ results: BenchmarkResults; hardware: HardwareInfo }> {
+        const hardware = this.getHardwareInfo();
+        printHardwareInfo(hardware);
+
         for (const tool of this.config.tools) {
             const toolResults = await this.benchmarkTool(tool);
             this.results[tool.name] = toolResults;
         }
 
-        this.printSummary();
-        return this.results;
-    }
-
-    private printSummary(): void {
-        console.log(chalk.cyan('\n===== BENCHMARK SUMMARY ====='));
-
-        for (const tool of this.config.tools as BuildToolConfig[]) {
-            const buildResults = this.results[tool.name] as BuildResults;
-
-            const buildTimeResults = buildResults.map((result) => result.buildTime);
-            const buildMemoryResults = buildResults.map((result) => result.memoryUsage);
-            const buildSizeResults = buildResults.map((result) => result.size);
-
-            if (buildTimeResults.length > 0) {
-                const times = this.calculateStats(buildTimeResults);
-                const memory = this.calculateStats(buildMemoryResults);
-                // Size is constant across iterations — just report the single value
-                const sizeValue = buildSizeResults[0]?.toFixed(2) ?? '0.00';
-
-                console.log(chalk.bold(`\n${tool.name.toUpperCase()}:`));
-                console.log(`Build time (s): avg=${times.avg}, min=${times.min}, max=${times.max}`);
-                console.log(`Memory usage (MB): avg=${memory.avg}, min=${memory.min}, max=${memory.max}`);
-                console.log(`Output size (MB): ${sizeValue}`);
-            } else {
-                console.log(chalk.yellow(`\n${tool.name.toUpperCase()}: no successful runs`));
-            }
-        }
-
-        // Print comparisons if there are multiple tools
-        if (this.config.tools.length > 1) {
-            this.printComparisons();
-        }
-    }
-
-    private printComparisons(): void {
-        console.log(chalk.cyan('\n===== COMPARISONS ====='));
-
-        const baselineTool = this.config.tools[0] as BuildToolConfig;
-        const baselineResults = this.results[baselineTool.name] as BuildResults;
-
-        if (baselineResults.length === 0) {
-            console.log(chalk.yellow(`Skipping comparisons: baseline tool "${baselineTool.name}" had no successful runs.`));
-            return;
-        }
-
-        const baselineTimeResults = baselineResults.map((result) => result.buildTime);
-        const baselineMemoryResults = baselineResults.map((result) => result.memoryUsage);
-        const baselineSizeResults = baselineResults.map((result) => result.size);
-
-        for (let i = 1; i < this.config.tools.length; i++) {
-            const comparisonTool = this.config.tools[i] as BuildToolConfig;
-            const comparisonResults = this.results[comparisonTool.name] as BuildResults;
-
-            if (comparisonResults.length === 0) {
-                console.log(chalk.yellow(`\nSkipping ${comparisonTool.name} vs ${baselineTool.name}: no successful runs for ${comparisonTool.name}.`));
-                continue;
-            }
-
-            const comparisonTimeResults = comparisonResults.map((result) => result.buildTime);
-            const comparisonMemoryResults = comparisonResults.map((result) => result.memoryUsage);
-            const comparisonSizeResults = comparisonResults.map((result) => result.size);
-
-            const baselineAvgTime = parseFloat(this.calculateStats(baselineTimeResults).avg);
-            const comparisonAvgTime = parseFloat(this.calculateStats(comparisonTimeResults).avg);
-
-            const baselineAvgMem = parseFloat(this.calculateStats(baselineMemoryResults).avg);
-            const comparisonAvgMem = parseFloat(this.calculateStats(comparisonMemoryResults).avg);
-
-            const baselineAvgSize = parseFloat(this.calculateStats(baselineSizeResults).avg);
-            const comparisonAvgSize = parseFloat(this.calculateStats(comparisonSizeResults).avg);
-
-            // Always express the ratio as >= 1 so "5x faster" and "5x slower" are both readable
-            const timeFasterOrSlower = comparisonAvgTime < baselineAvgTime ? 'faster' : 'slower';
-            const timeRatio = timeFasterOrSlower === 'faster'
-                ? (baselineAvgTime / comparisonAvgTime).toFixed(2)
-                : (comparisonAvgTime / baselineAvgTime).toFixed(2);
-
-            const memMoreOrLess = comparisonAvgMem < baselineAvgMem ? 'less' : 'more';
-            const memRatio = memMoreOrLess === 'less'
-                ? (baselineAvgMem / comparisonAvgMem).toFixed(2)
-                : (comparisonAvgMem / baselineAvgMem).toFixed(2);
-
-            const sizeMoreOrLess = comparisonAvgSize < baselineAvgSize ? 'smaller' : 'larger';
-            const sizeRatio = sizeMoreOrLess === 'smaller'
-                ? (baselineAvgSize / comparisonAvgSize).toFixed(2)
-                : (comparisonAvgSize / baselineAvgSize).toFixed(2);
-
-            console.log(chalk.bold(`\n${comparisonTool.name} vs ${baselineTool.name}:`));
-            console.log(`Speed: ${comparisonTool.name} is ${timeRatio}x ${timeFasterOrSlower}`);
-            console.log(`Memory: ${comparisonTool.name} uses ${memRatio}x ${memMoreOrLess} memory`);
-            console.log(`Size: ${comparisonTool.name} output is ${sizeRatio}x ${sizeMoreOrLess}`);
-        }
+        printSummary(this.config, this.results);
+        return { results: this.results, hardware };
     }
 }
+
+// Re-export calculateStats so existing consumers (tests, cli) can import it from here
+// without breaking changes if they were importing from benchmark directly.
+export { calculateStats };
